@@ -19,19 +19,19 @@ config.outbounds.map(i => {
   if (['节点选择', '自动选择'].includes(i.tag)) {
     i.outbounds.push(...getTags(proxies))
   }
-  if (['香港选择', '香港节点'].includes(i.tag)) {
+  if (['切换香港', '香港节点'].includes(i.tag)) {
     i.outbounds.push(...getTags(proxies, /港|hk|hongkong|kong kong|🇭🇰/i))
   }
-  if (['台湾选择', '台湾节点'].includes(i.tag)) {
+  if (['切换台湾', '台湾节点'].includes(i.tag)) {
     i.outbounds.push(...getTags(proxies, /台|tw|taiwan|🇹🇼/i))
   }
-  if (['日本选择', '日本节点'].includes(i.tag)) {
+  if (['切换日本', '日本节点'].includes(i.tag)) {
     i.outbounds.push(...getTags(proxies, /日本|jp|japan|🇯🇵/i))
   }
-  if (['新国选择', '新国节点'].includes(i.tag)) {
+  if (['切换新国', '新国节点'].includes(i.tag)) {
     i.outbounds.push(...getTags(proxies, /^(?!.*(?:us)).*(新|sg|singapore|🇸🇬)/i))
   }
-  if (['美国选择', '美国节点'].includes(i.tag)) {
+  if (['切换美国', '美国节点'].includes(i.tag)) {
     i.outbounds.push(...getTags(proxies, /美|us|unitedstates|united states|🇺🇸/i))
   }
 })

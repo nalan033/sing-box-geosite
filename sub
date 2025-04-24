@@ -1,5 +1,3 @@
-trojan://017f4a21-34de-423c-b8fe-60ce20ce99bd@205.198.65.217:56563?type=tcp&security=tls&allowInsecure=1#香港n1
-trojan://4c197ddc-224d-4e76-ad55-f9d4d4c22499@103.255.208.129:8443?type=tcp&security=tls&allowInsecure=1#香港a2
-trojan://d0536295-8b38-4293-b8f5-04062acbd7a9@156.226.172.9:56563?type=tcp&security=tls&allowInsecure=1#香港a3
-trojan://b11a7728-772e-4e35-bcf7-22012cd9f4cf@205.198.72.3:56563?type=tcp&security=tls&allowInsecure=1#新加坡a1
-
+ss://YWVzLTI1Ni1nY206YXNkZmdoamtsbW4=@180.188.47.64:50933#香港1
+trojan://728bacd1-a634-4e41-840c-744b834c469b@185.241.42.156:56563?type=tcp&security=tls&allowInsecure=1#香港2
+trojan://6b89a057-ea65-4570-a25e-881e811f33ef@166.88.141.213:56563?type=tcp&security=tls&allowInsecure=1#香港3

@@ -7,7 +7,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # 配置文件路径
 RULES_FILE="/etc/realm/rules.conf"
@@ -19,7 +19,6 @@ CRM_SCRIPT="/usr/local/bin/crm"
 # GitHub 仓库
 GITHUB_REPO="zhboner/realm"
 
-# 显示标题
 show_header() {
     clear
     echo -e "${GREEN}========================================${NC}"
@@ -28,7 +27,6 @@ show_header() {
     echo ""
 }
 
-# 检查root权限
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}错误: 此脚本必须以root权限运行${NC}"
@@ -36,7 +34,6 @@ check_root() {
     fi
 }
 
-# 检测系统架构
 detect_arch() {
     local arch
     arch=$(uname -m)
@@ -53,7 +50,20 @@ detect_arch() {
     esac
 }
 
-# 安装realm（自动获取最新版本）
+# 检查系统是否支持 IPv6
+ipv6_available() {
+    # 如果 /proc/net/if_inet6 存在且非空，或 disable_ipv6=0，则认为可用
+    if [ -f /proc/net/if_inet6 ] && [ -s /proc/net/if_inet6 ]; then
+        return 0
+    fi
+    if [ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 ]; then
+        local disabled
+        disabled=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)
+        [ "$disabled" = "0" ] && return 0
+    fi
+    return 1
+}
+
 install_realm() {
     echo -e "${BLUE}[1/5] 安装 realm (最新版本)...${NC}"
     
@@ -81,9 +91,7 @@ install_realm() {
         exit 1
     fi
     
-    local latest_version
-    local download_url
-    
+    local latest_version download_url
     if command -v jq &>/dev/null; then
         latest_version=$(echo "$release_data" | jq -r '.tag_name')
         download_url=$(echo "$release_data" | jq -r --arg suffix "$ARCH_SUFFIX" '
@@ -97,33 +105,30 @@ install_realm() {
     fi
     
     if [ -z "$latest_version" ] || [ -z "$download_url" ]; then
-        echo -e "${RED}错误: 无法获取最新版本信息或下载链接，请检查网络或手动安装 realm${NC}"
+        echo -e "${RED}错误: 无法获取最新版本信息或下载链接${NC}"
         exit 1
     fi
     
     echo -e "${GREEN}最新版本: ${latest_version}${NC}"
     echo -e "${YELLOW}下载链接: ${download_url}${NC}"
     
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    
+    local tmp_dir=$(mktemp -d)
     echo -e "${YELLOW}正在下载 realm...${NC}"
     if command -v curl &>/dev/null; then
         curl -L "$download_url" -o "$tmp_dir/realm.tar.gz" --retry 3
-    elif command -v wget &>/dev/null; then
+    else
         wget -O "$tmp_dir/realm.tar.gz" "$download_url" -t 3
     fi
     
     if [ $? -ne 0 ]; then
-        echo -e "${RED}下载失败，请检查网络${NC}"
+        echo -e "${RED}下载失败${NC}"
         rm -rf "$tmp_dir"
         exit 1
     fi
     
     mkdir -p /usr/local/bin
     tar -xzf "$tmp_dir/realm.tar.gz" -C "$tmp_dir"
-    local realm_path
-    realm_path=$(find "$tmp_dir" -type f -name realm -executable | head -1)
+    local realm_path=$(find "$tmp_dir" -type f -name realm -executable | head -1)
     if [ -z "$realm_path" ]; then
         echo -e "${RED}解压后未找到 realm 可执行文件${NC}"
         rm -rf "$tmp_dir"
@@ -141,20 +146,15 @@ install_realm() {
     fi
 }
 
-# 创建规则配置文件
 create_rules_file() {
     echo -e "${BLUE}[2/5] 创建规则文件...${NC}"
-    
     mkdir -p /etc/realm
     if [ ! -f "$RULES_FILE" ]; then
         cat > "$RULES_FILE" << 'EOF'
 # Realm 端口转发规则
 # 格式: 本地端口:远程地址:远程端口
 # 远程地址可以为 IP 或域名
-# 每个规则将同时监听 IPv4 和 IPv6，并转发 TCP 与 UDP
-# 例如:
-# 8080:192.168.1.100:80
-# 9000:example.com:3389
+# 每个规则将同时监听 IPv4（若支持 IPv6 则同时监听 IPv6），转发 TCP 与 UDP
 EOF
         chmod 644 "$RULES_FILE"
         echo -e "${GREEN}规则文件已创建: $RULES_FILE${NC}"
@@ -163,11 +163,14 @@ EOF
     fi
 }
 
-# 根据规则生成 realm 配置（使用新模板）
+# 核心：生成 realm 配置（安装脚本内嵌版，供安装时调用）
 generate_realm_config() {
-    local config_tmp
-    config_tmp=$(mktemp)
-    
+    local config_tmp=$(mktemp)
+    local use_ipv6="no"
+    if ipv6_available; then
+        use_ipv6="yes"
+    fi
+
     cat > "$config_tmp" << 'EOF'
 [log]
 level = "warn"
@@ -187,11 +190,15 @@ EOF
 listen = "0.0.0.0:${local_port}"
 remote = "${remote_addr}:${remote_port}"
 
+INNEREOF
+                if [ "$use_ipv6" = "yes" ]; then
+                    cat >> "$config_tmp" << INNEREOF
 [[endpoints]]
 listen = "[::]:${local_port}"
 remote = "${remote_addr}:${remote_port}"
 
 INNEREOF
+                fi
             fi
         done
     fi
@@ -200,10 +207,8 @@ INNEREOF
     chmod 644 "$REALM_CONFIG"
 }
 
-# 创建systemd服务
 create_systemd_service() {
     echo -e "${BLUE}[3/5] 创建系统服务...${NC}"
-    
     cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=Realm Port Forwarding Service
@@ -220,15 +225,13 @@ RestartSec=5s
 [Install]
 WantedBy=multi-user.target
 EOF
-    
     systemctl daemon-reload
     echo -e "${GREEN}系统服务已创建${NC}"
 }
 
-# 创建crm管理脚本
+# 创建 crm 管理脚本（内嵌 IPv6 检测 + 直接重启逻辑）
 create_crm_script() {
     echo -e "${BLUE}[4/5] 创建管理脚本...${NC}"
-    
     cat > "$CRM_SCRIPT" << 'CRM_EOF'
 #!/bin/bash
 
@@ -251,10 +254,25 @@ show_header() {
     echo ""
 }
 
+# 检查 IPv6 是否可用
+ipv6_available() {
+    if [ -f /proc/net/if_inet6 ] && [ -s /proc/net/if_inet6 ]; then
+        return 0
+    fi
+    if [ -f /proc/sys/net/ipv6/conf/all/disable_ipv6 ]; then
+        local disabled=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null)
+        [ "$disabled" = "0" ] && return 0
+    fi
+    return 1
+}
+
 generate_realm_config() {
-    local config_tmp
-    config_tmp=$(mktemp)
-    
+    local config_tmp=$(mktemp)
+    local use_ipv6="no"
+    if ipv6_available; then
+        use_ipv6="yes"
+    fi
+
     cat > "$config_tmp" << 'EOF'
 [log]
 level = "warn"
@@ -274,11 +292,15 @@ EOF
 listen = "0.0.0.0:${local_port}"
 remote = "${remote_addr}:${remote_port}"
 
+INNEREOF
+                if [ "$use_ipv6" = "yes" ]; then
+                    cat >> "$config_tmp" << INNEREOF
 [[endpoints]]
 listen = "[::]:${local_port}"
 remote = "${remote_addr}:${remote_port}"
 
 INNEREOF
+                fi
             fi
         done
     fi
@@ -286,22 +308,18 @@ INNEREOF
     mv "$config_tmp" "$REALM_CONFIG"
 }
 
-reload_service() {
+# 重启服务（直接 restart，确保生效）
+restart_service_force() {
     generate_realm_config
+    systemctl restart "$SERVICE_NAME"
+    sleep 1
     if systemctl is-active --quiet "$SERVICE_NAME"; then
-        systemctl reload "$SERVICE_NAME" >/dev/null 2>&1
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}配置已热重载${NC}"
-        else
-            echo -e "${YELLOW}热重载失败，尝试重启...${NC}"
-            systemctl restart "$SERVICE_NAME"
-            systemctl is-active --quiet "$SERVICE_NAME" && echo -e "${GREEN}重启成功${NC}" || { echo -e "${RED}重启失败${NC}"; return 1; }
-        fi
+        echo -e "${GREEN}服务已重启，新规则生效${NC}"
+        return 0
     else
-        systemctl start "$SERVICE_NAME"
-        systemctl is-active --quiet "$SERVICE_NAME" && echo -e "${GREEN}服务已启动${NC}" || { echo -e "${RED}启动失败${NC}"; return 1; }
+        echo -e "${RED}服务重启失败，请检查日志: journalctl -u $SERVICE_NAME${NC}"
+        return 1
     fi
-    return 0
 }
 
 show_menu() {
@@ -322,9 +340,7 @@ show_menu() {
 add_forward() {
     show_header
     echo -e "${YELLOW}添加端口转发规则（代理模式）${NC}"
-    echo ""
-    echo -e "${YELLOW}每个规则将同时监听 IPv4 和 IPv6，并转发 TCP 与 UDP${NC}"
-    echo ""
+    echo -e "${YELLOW}系统将自动检测 IPv6 支持，若支持则同时监听 IPv4/IPv6${NC}\n"
     
     while true; do
         read -p "本地端口 (1-65535): " local_port
@@ -335,11 +351,7 @@ add_forward() {
     
     while true; do
         read -p "远程地址 (IP 或 域名): " remote_addr
-        if [ -n "$remote_addr" ]; then
-            break
-        else
-            echo -e "${RED}远程地址不能为空${NC}"
-        fi
+        [ -n "$remote_addr" ] && break || echo -e "${RED}远程地址不能为空${NC}"
     done
     
     while true; do
@@ -348,13 +360,13 @@ add_forward() {
     done
     
     echo ""
-    echo -e "确认: ${GREEN}$local_port -> $remote_addr:$remote_port (IPv4/IPv6, TCP/UDP)${NC}"
+    echo -e "确认: ${GREEN}$local_port -> $remote_addr:$remote_port (TCP+UDP)${NC}"
     read -p "添加? (y/n): " confirm
     [[ "$confirm" =~ ^[Yy]$ ]] || { echo -e "${YELLOW}已取消${NC}"; read -p "回车返回..."; return; }
     
     echo "$local_port:$remote_addr:$remote_port" >> "$RULES_FILE"
     echo -e "${GREEN}规则已添加${NC}"
-    reload_service
+    restart_service_force   # 直接重启确保生效
     read -p "按回车返回..."
 }
 
@@ -368,7 +380,7 @@ list_forwards() {
     echo -e "${CYAN}-----|----------|-------------------------|------${NC}"
     local index=1
     while IFS=':' read lp raddr rp; do
-        printf "%-5s | %-8s | %-24s | %-s\n" "$index" "$lp" "$raddr:$rp" "TCP+UDP/IPv4+IPv6"
+        printf "%-5s | %-8s | %-24s | %-s\n" "$index" "$lp" "$raddr:$rp" "TCP+UDP"
         ((index++))
     done < <(grep -v '^#' "$RULES_FILE" | grep -v '^$')
     echo ""; read -p "回车返回..."
@@ -429,7 +441,7 @@ modify_forward() {
             ;;
         *) echo "取消";;
     esac
-    reload_service
+    restart_service_force   # 修改后直接重启
     read -p "回车返回..."
 }
 
@@ -443,17 +455,14 @@ show_status() {
     fi
     echo -e "\n${CYAN}规则:${NC}"
     grep -v '^#' "$RULES_FILE" 2>/dev/null | grep -v '^$' | while IFS=':' read lp raddr rp; do
-        echo -e "  ${GREEN}$lp${NC} -> $raddr:$rp (IPv4/IPv6, TCP/UDP)"
+        echo -e "  ${GREEN}$lp${NC} -> $raddr:$rp (TCP+UDP)"
     done
     echo ""; read -p "回车返回..."
 }
 
 restart_service() {
     show_header
-    generate_realm_config
-    systemctl restart "$SERVICE_NAME"
-    sleep 1
-    systemctl is-active --quiet "$SERVICE_NAME" && echo -e "${GREEN}重启成功${NC}" || echo -e "${RED}重启失败${NC}"
+    restart_service_force
     read -p "回车返回..."
 }
 
@@ -466,7 +475,7 @@ stop_service() {
 
 reload_rules() {
     show_header
-    reload_service
+    restart_service_force
     read -p "回车返回..."
 }
 
@@ -512,11 +521,10 @@ main() {
 }
 
 case "$1" in
-    reload) generate_realm_config; systemctl is-active --quiet "$SERVICE_NAME" && systemctl reload "$SERVICE_NAME" || systemctl start "$SERVICE_NAME" ;;
+    reload|start) restart_service_force ;;
     stop) systemctl stop "$SERVICE_NAME" ;;
     status) show_status; exit 0 ;;
     list) list_forwards; exit 0 ;;
-    start) generate_realm_config; systemctl start "$SERVICE_NAME" ;;
     *) main ;;
 esac
 CRM_EOF
@@ -525,14 +533,11 @@ CRM_EOF
     echo -e "${GREEN}管理脚本已创建: $CRM_SCRIPT${NC}"
 }
 
-# 启动服务
 start_services() {
     echo -e "${BLUE}[5/5] 启动服务...${NC}"
-    
     generate_realm_config
     systemctl enable realm-forward.service
-    systemctl start realm-forward.service
-    
+    systemctl restart realm-forward.service   # 首次启动直接用 restart
     if systemctl is-active --quiet realm-forward.service; then
         echo -e "${GREEN}服务启动成功${NC}"
     else
@@ -540,7 +545,6 @@ start_services() {
     fi
 }
 
-# 完成安装提示
 complete_installation() {
     show_header
     echo -e "${GREEN}========================================${NC}"
@@ -554,10 +558,14 @@ complete_installation() {
     echo -e "用法: sudo crm"
     echo -e "快速命令: crm reload/status/list/start/stop"
     echo ""
+    if ipv6_available; then
+        echo -e "检测到系统支持 IPv6，规则将同时监听 IPv4 与 IPv6"
+    else
+        echo -e "未检测到 IPv6，规则将仅监听 IPv4"
+    fi
     echo -e "${GREEN}现在可以使用 'sudo crm' 配置端口转发！${NC}"
 }
 
-# 主安装流程
 main_install() {
     check_root
     show_header

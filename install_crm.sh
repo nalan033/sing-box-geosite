@@ -52,7 +52,6 @@ detect_arch() {
 
 # 检查系统是否支持 IPv6
 ipv6_available() {
-    # 如果 /proc/net/if_inet6 存在且非空，或 disable_ipv6=0，则认为可用
     if [ -f /proc/net/if_inet6 ] && [ -s /proc/net/if_inet6 ]; then
         return 0
     fi
@@ -154,7 +153,7 @@ create_rules_file() {
 # Realm 端口转发规则
 # 格式: 本地端口:远程地址:远程端口
 # 远程地址可以为 IP 或域名
-# 每个规则将同时监听 IPv4（若支持 IPv6 则同时监听 IPv6），转发 TCP 与 UDP
+# 每个规则将通过 IPv6 双栈套接字（若系统支持）同时接受 IPv4/IPv6 连接，转发 TCP 与 UDP
 EOF
         chmod 644 "$RULES_FILE"
         echo -e "${GREEN}规则文件已创建: $RULES_FILE${NC}"
@@ -163,7 +162,7 @@ EOF
     fi
 }
 
-# 核心：生成 realm 配置（安装脚本内嵌版，供安装时调用）
+# 核心：生成 realm 配置（使用单 IPv6 双栈端点）
 generate_realm_config() {
     local config_tmp=$(mktemp)
     local use_ipv6="no"
@@ -185,16 +184,19 @@ EOF
     if [ -f "$RULES_FILE" ]; then
         grep -v '^#' "$RULES_FILE" | grep -v '^$' | while IFS=':' read local_port remote_addr remote_port; do
             if [ -n "$local_port" ] && [ -n "$remote_addr" ] && [ -n "$remote_port" ]; then
-                cat >> "$config_tmp" << INNEREOF
-[[endpoints]]
-listen = "0.0.0.0:${local_port}"
-remote = "${remote_addr}:${remote_port}"
-
-INNEREOF
                 if [ "$use_ipv6" = "yes" ]; then
+                    # 双栈：仅使用 [::] 端点，同时接受 IPv4 和 IPv6
                     cat >> "$config_tmp" << INNEREOF
 [[endpoints]]
 listen = "[::]:${local_port}"
+remote = "${remote_addr}:${remote_port}"
+
+INNEREOF
+                else
+                    # IPv6 不可用，仅 IPv4
+                    cat >> "$config_tmp" << INNEREOF
+[[endpoints]]
+listen = "0.0.0.0:${local_port}"
 remote = "${remote_addr}:${remote_port}"
 
 INNEREOF
@@ -229,7 +231,7 @@ EOF
     echo -e "${GREEN}系统服务已创建${NC}"
 }
 
-# 创建 crm 管理脚本（内嵌 IPv6 检测 + 直接重启逻辑）
+# 创建 crm 管理脚本（内嵌相同逻辑）
 create_crm_script() {
     echo -e "${BLUE}[4/5] 创建管理脚本...${NC}"
     cat > "$CRM_SCRIPT" << 'CRM_EOF'
@@ -254,7 +256,6 @@ show_header() {
     echo ""
 }
 
-# 检查 IPv6 是否可用
 ipv6_available() {
     if [ -f /proc/net/if_inet6 ] && [ -s /proc/net/if_inet6 ]; then
         return 0
@@ -287,16 +288,17 @@ EOF
     if [ -f "$RULES_FILE" ]; then
         grep -v '^#' "$RULES_FILE" | grep -v '^$' | while IFS=':' read local_port remote_addr remote_port; do
             if [ -n "$local_port" ] && [ -n "$remote_addr" ] && [ -n "$remote_port" ]; then
-                cat >> "$config_tmp" << INNEREOF
-[[endpoints]]
-listen = "0.0.0.0:${local_port}"
-remote = "${remote_addr}:${remote_port}"
-
-INNEREOF
                 if [ "$use_ipv6" = "yes" ]; then
                     cat >> "$config_tmp" << INNEREOF
 [[endpoints]]
 listen = "[::]:${local_port}"
+remote = "${remote_addr}:${remote_port}"
+
+INNEREOF
+                else
+                    cat >> "$config_tmp" << INNEREOF
+[[endpoints]]
+listen = "0.0.0.0:${local_port}"
 remote = "${remote_addr}:${remote_port}"
 
 INNEREOF
@@ -308,7 +310,6 @@ INNEREOF
     mv "$config_tmp" "$REALM_CONFIG"
 }
 
-# 重启服务（直接 restart，确保生效）
 restart_service_force() {
     generate_realm_config
     systemctl restart "$SERVICE_NAME"
@@ -340,7 +341,7 @@ show_menu() {
 add_forward() {
     show_header
     echo -e "${YELLOW}添加端口转发规则（代理模式）${NC}"
-    echo -e "${YELLOW}系统将自动检测 IPv6 支持，若支持则同时监听 IPv4/IPv6${NC}\n"
+    echo -e "${YELLOW}系统将通过 IPv6 双栈套接字同时接受 IPv4/IPv6 连接，转发 TCP+UDP${NC}\n"
     
     while true; do
         read -p "本地端口 (1-65535): " local_port
@@ -366,7 +367,7 @@ add_forward() {
     
     echo "$local_port:$remote_addr:$remote_port" >> "$RULES_FILE"
     echo -e "${GREEN}规则已添加${NC}"
-    restart_service_force   # 直接重启确保生效
+    restart_service_force
     read -p "按回车返回..."
 }
 
@@ -441,7 +442,7 @@ modify_forward() {
             ;;
         *) echo "取消";;
     esac
-    restart_service_force   # 修改后直接重启
+    restart_service_force
     read -p "回车返回..."
 }
 
@@ -537,7 +538,7 @@ start_services() {
     echo -e "${BLUE}[5/5] 启动服务...${NC}"
     generate_realm_config
     systemctl enable realm-forward.service
-    systemctl restart realm-forward.service   # 首次启动直接用 restart
+    systemctl restart realm-forward.service
     if systemctl is-active --quiet realm-forward.service; then
         echo -e "${GREEN}服务启动成功${NC}"
     else
@@ -559,9 +560,9 @@ complete_installation() {
     echo -e "快速命令: crm reload/status/list/start/stop"
     echo ""
     if ipv6_available; then
-        echo -e "检测到系统支持 IPv6，规则将同时监听 IPv4 与 IPv6"
+        echo -e "检测到系统支持 IPv6，将通过 IPv6 双栈套接字同时接受 IPv4/IPv6 连接"
     else
-        echo -e "未检测到 IPv6，规则将仅监听 IPv4"
+        echo -e "未检测到 IPv6，将仅监听 IPv4"
     fi
     echo -e "${GREEN}现在可以使用 'sudo crm' 配置端口转发！${NC}"
 }
